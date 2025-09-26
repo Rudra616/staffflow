@@ -11,5 +11,6 @@ packaging==25.0
 pillow==11.3.0
 psycopg2-binary==2.9.10
 PyJWT==2.10.1
+python-decouple==3.8
 reportlab==4.4.3
 sqlparse==0.5.3
