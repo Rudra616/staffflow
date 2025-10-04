@@ -5,7 +5,7 @@ import { Picker } from '@react-native-picker/picker';
 import { writeAsStringAsync, documentDirectory } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as Print from 'expo-print';
-import * as FileSystem from 'expo-file-system/legacy';
+import * as FileSystem from 'expo-file-system';
 
 const DashboardScreen = ({ route, navigation }) => {
     const [userData, setUserData] = useState(route.params?.userData || {});

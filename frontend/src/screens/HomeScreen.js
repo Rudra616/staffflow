@@ -11,6 +11,7 @@ import {
     TouchableOpacity
 } from 'react-native';
 import api, { logoutUser } from '../api';
+import AsyncStorage from '@react-native-async-storage/async-storage'; // ADD THIS IMPORT
 
 const HomeScreen = ({ navigation, route }) => {
     const [userData, setUserData] = useState(null);
@@ -21,30 +22,61 @@ const HomeScreen = ({ navigation, route }) => {
     const [todayAttendance, setTodayAttendance] = useState(null);
     const [isAdmin, setIsAdmin] = useState(false);
 
-    // Fetch user data and check if admin
+
     const fetchUserData = async () => {
         try {
             setLoading(true);
+            console.log('HomeScreen: Fetching dashboard data...');
+
+            // Check if we have a token (using the imported AsyncStorage)
+            const token = await AsyncStorage.getItem("access");
+            console.log('Token available:', !!token);
+            if (token) {
+                console.log('Token length:', token.length);
+            }
+
             const response = await api.get('dashboard/');
+            console.log('Dashboard response received:', response.status);
+            console.log('Dashboard data:', response.data);
+
             setUserData(response.data);
 
-            // Check if user is admin
             const userIsAdmin = response.data.user?.is_admin || false;
             setIsAdmin(userIsAdmin);
+            console.log('User is admin:', userIsAdmin);
 
-            console.log('User role:', userIsAdmin ? 'Admin' : 'Regular User');
-            console.log('User data:', response.data.user);
-
-            // If user is admin, fetch admin-specific data
             if (userIsAdmin) {
                 await fetchAdminData();
             } else {
-                // Check today's attendance only for regular users
                 checkTodayAttendance(response.data);
             }
         } catch (error) {
             console.log('Error fetching user data:', error);
-            Alert.alert('Error', 'Failed to load user data');
+            console.log('Error status:', error.response?.status);
+            console.log('Error message:', error.message);
+            console.log('Error response data:', error.response?.data);
+
+            // Handle 401 specifically
+            if (error.response?.status === 401) {
+                Alert.alert(
+                    'Session Expired',
+                    'Please login again',
+                    [
+                        {
+                            text: 'OK',
+                            onPress: () => {
+                                logoutUser();
+                                navigation.reset({
+                                    index: 0,
+                                    routes: [{ name: "Login" }],
+                                });
+                            }
+                        }
+                    ]
+                );
+            } else {
+                Alert.alert('Error', 'Failed to load user data: ' + (error.message || 'Unknown error'));
+            }
         } finally {
             setLoading(false);
         }

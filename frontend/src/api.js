@@ -1,130 +1,151 @@
+// api.js - UPDATED
 import axios from 'axios';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { navigationRef } from './navigation/RootNavigation';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { BASE_URL } from '@env';
+// Use a fallback if environment variable is not available
+const BASE_URL = 'https://staffflow.onrender.com/api/';
 
 const api = axios.create({
     baseURL: BASE_URL,
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+    },
 });
 
 let refreshTimer = null;
 
-// === AUTOMATIC TOKEN REFRESH SCHEDULER ===
-const scheduleTokenRefresh = async () => {
-    if (refreshTimer) {
-        clearTimeout(refreshTimer);
+// Clear tokens and redirect to login
+export const clearTokensAndRelogin = async () => {
+    console.log('Clearing tokens and redirecting to login...');
+    await AsyncStorage.multiRemove(["access", "refresh"]);
+    if (navigationRef.isReady()) {
+        navigationRef.reset({ index: 0, routes: [{ name: "Login" }] });
     }
+};
+
+// Schedule token refresh
+const scheduleTokenRefresh = async () => {
+    if (refreshTimer) clearTimeout(refreshTimer);
 
     const accessToken = await AsyncStorage.getItem("access");
     if (!accessToken) return;
 
     try {
         const payload = JSON.parse(atob(accessToken.split('.')[1]));
-        const exp = payload.exp * 1000; // Token expiration time
+        const exp = payload.exp * 1000;
         const now = Date.now();
         const expiresIn = exp - now;
-
-        // Dynamic calculation based on actual token expiry
-        // Refresh when 25% of token life remains (or 30 seconds minimum)
         const refreshTime = Math.max(expiresIn * 0.50, 30000);
 
         if (refreshTime > 0) {
-            refreshTimer = setTimeout(() => {
-                refreshTokenSilently();
-            }, refreshTime);
+            refreshTimer = setTimeout(refreshTokenSilently, refreshTime);
         }
     } catch (error) {
-        // Silent error - will handle on next API call
+        console.log('Token schedule error:', error);
     }
 };
 
-// === SILENT TOKEN REFRESH ===
+// Silent token refresh
 const refreshTokenSilently = async () => {
     try {
         const refresh = await AsyncStorage.getItem("refresh");
         if (!refresh) return;
 
         const response = await api.post('token/refresh/', { refresh });
-        const newAccess = response.data.access;
-        await AsyncStorage.setItem("access", newAccess);
-
-        // Reschedule with new token's expiry time
+        await AsyncStorage.setItem("access", response.data.access);
         scheduleTokenRefresh();
     } catch (error) {
-        // Silent error - will handle on next API call
+        await clearTokensAndRelogin();
     }
 };
 
-// === LOGIN FUNCTION ===
+// Login function
 export const loginUser = async (username, password) => {
     try {
         const response = await api.post('token/', { username, password });
 
         await AsyncStorage.setItem("access", response.data.access);
         await AsyncStorage.setItem("refresh", response.data.refresh);
-
-        // Schedule refresh based on the token we just received
         scheduleTokenRefresh();
+
         return response.data;
     } catch (error) {
-        throw new Error(error.response?.data?.detail || "server was down");
+        throw new Error(error.response?.data?.detail || "Login failed");
     }
 };
 
-// === LOGOUT FUNCTION ===
-const logoutUser = async () => {
-    if (refreshTimer) {
-        clearTimeout(refreshTimer);
-        refreshTimer = null;
-    }
-    await AsyncStorage.multiRemove(["access", "refresh"]);
+// Logout function
+export const logoutUser = async () => {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    await clearTokensAndRelogin();
 };
 
-// === REQUEST INTERCEPTOR ===
+// Request interceptor - IMPROVED
 api.interceptors.request.use(async (config) => {
+    console.log(`API Request: ${config.method?.toUpperCase()} ${config.url}`);
+
+    // Skip auth for token endpoints
     if (config.url.endsWith('token/') || config.url.endsWith('token/refresh/')) {
         return config;
     }
 
     const access = await AsyncStorage.getItem("access");
+    console.log('Access token available:', !!access);
+
     if (access) {
         config.headers.Authorization = `Bearer ${access}`;
+        console.log('Authorization header set');
     } else {
-        if (navigationRef.isReady()) {
-            navigationRef.reset({ index: 0, routes: [{ name: "Login" }] });
-        }
-        return Promise.reject({ message: 'No access token' });
+        console.log('No access token available');
     }
 
     return config;
-}, error => Promise.reject(error));
+}, error => {
+    console.log('Request interceptor error:', error);
+    return Promise.reject(error);
+});
 
-// === RESPONSE INTERCEPTOR ===
+// Response interceptor - IMPROVED
 api.interceptors.response.use(
-    (response) => response,
+    (response) => {
+        console.log(`API Response: ${response.status} ${response.config.url}`);
+        return response;
+    },
     async (error) => {
+        console.log(`API Error: ${error.response?.status} ${error.config?.url}`);
+        console.log('Error details:', error.response?.data);
+
         const originalRequest = error.config;
 
-        if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
-            originalRequest._retry = true;
+        if (error.response?.status === 401) {
+            console.log('401 Unauthorized error detected');
 
-            try {
-                const refresh = await AsyncStorage.getItem("refresh");
-                if (refresh) {
-                    const res = await api.post('token/refresh/', { refresh });
-                    const newAccess = res.data.access;
-                    await AsyncStorage.setItem("access", newAccess);
-                    scheduleTokenRefresh();
-                    originalRequest.headers.Authorization = `Bearer ${newAccess}`;
-                    return api(originalRequest);
+            if (originalRequest && !originalRequest._retry) {
+                originalRequest._retry = true;
+                console.log('Attempting token refresh...');
+
+                try {
+                    const refresh = await AsyncStorage.getItem("refresh");
+                    if (refresh) {
+                        const res = await api.post('token/refresh/', { refresh });
+                        await AsyncStorage.setItem("access", res.data.access);
+                        scheduleTokenRefresh();
+                        originalRequest.headers.Authorization = `Bearer ${res.data.access}`;
+                        console.log('Token refreshed, retrying original request');
+                        return api(originalRequest);
+                    } else {
+                        console.log('No refresh token available');
+                        await clearTokensAndRelogin();
+                    }
+                } catch (refreshError) {
+                    console.log('Token refresh failed:', refreshError);
+                    await clearTokensAndRelogin();
                 }
-            } catch (refreshError) {
-                await logoutUser();
-                if (navigationRef.isReady()) {
-                    navigationRef.reset({ index: 0, routes: [{ name: "Login" }] });
-                }
+            } else {
+                console.log('Request already retried or no original request');
+                await clearTokensAndRelogin();
             }
         }
 
@@ -132,20 +153,18 @@ api.interceptors.response.use(
     }
 );
 
-// api.js - Add a function to check user role
-
 export const getUserRole = async () => {
     try {
+        console.log('Fetching user role from dashboard endpoint...');
         const response = await api.get('dashboard/');
         return {
             isAdmin: response.data.user?.is_admin || false,
             userData: response.data
         };
     } catch (error) {
-        throw new Error('Failed to get user role');
+        console.log('Error fetching user role:', error);
+        throw error;
     }
 };
 
-
 export default api;
-export { logoutUser };
